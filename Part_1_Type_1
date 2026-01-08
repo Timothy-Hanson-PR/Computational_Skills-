@@ -1,0 +1,121 @@
+data <- read.csv("ScanRecords.csv")
+numberdays <- length(unique(data$Date))
+numberPatients <- matrix(data = 0, nrow=numberdays, ncol = 2)
+colnames(numberPatients) <- c("Type1","Type2")
+
+counter <- 1
+for(i in 1:length(data$Date)){
+  if(i > 1 && data$Date[i] != data$Date[i-1]){
+    counter = counter +1
+  }
+  if(data$PatientType[i] == "Type 1"){
+    numberPatients[counter,1] <- numberPatients[counter,1] + 1
+  }
+  else{
+    numberPatients[counter,2] <- numberPatients[counter,2] + 1
+  }
+}
+plot(numberPatients[,1])
+plot(numberPatients[,2])
+plot(table(numberPatients[,1]))
+plot(table(numberPatients[,2]))
+
+
+lengthsType1 <- c()
+lengthsType2 <- c()
+for(i in 1:length(data$Date)){
+  if(data$PatientType[i] == "Type 1"){
+    lengthsType1 <- c(lengthsType1,data$Duration[i])
+  }
+  else{
+    lengthsType2 <- c(lengthsType2,data$Duration[i])
+  }
+}
+plot(sort(lengthsType1))
+plot(sort(lengthsType2))
+
+# Duration model: Normal(mu, sigma^2)
+mu_hat <- mean(lengthsType1)
+sigma_hat <- sd(lengthsType1)
+
+# Daily arrivals model: Poisson(lambda)
+daily_counts_type1 <- numberPatients[, "Type1"]
+lambda_hat <- mean(daily_counts_type1)
+
+mu_hat
+sigma_hat
+lambda_hat
+
+# Parametric bootstrap for uncertainty: Type 1
+set.seed(42)
+B <- 5000
+
+n_dur <- length(lengthsType1)
+n_days <- length(daily_counts_type1)
+
+mu_star <- numeric(B)
+sigma_star <- numeric(B)
+lambda_star <- numeric(B)
+
+# Simulate durations from Normal(mu_hat, sigma_hat) and daily counts from Poisson(lambda_hat)
+for(b in 1:B) {
+  sim_dur <- rnorm(n = n_dur, mean = mu_hat, sd = sigma_hat)
+  mu_star[b] <- mean(sim_dur)
+  sigma_star[b] <- sd(sim_dur)
+  
+  sim_counts <- rpois(n = n_days, lambda = lambda_hat)
+  lambda_star[b] <- mean(sim_counts)
+}
+
+# Percentile confidence intervals (95%)
+percentile_ci <- function(x, alpha = 0.05) {
+  quantile(x, probs = c(alpha/2, 1 - alpha/2))
+}
+
+mu_ci <- percentile_ci(mu_star)
+sigma_ci <- percentile_ci(sigma_star)
+lambda_ci <- percentile_ci(lambda_star)
+
+mu_ci
+sigma_ci
+lambda_ci
+
+# 95th percentile of Type 1 duration
+z95 <- qnorm(0.95)
+p95_hat <- mu_hat + z95 * sigma_hat
+p95_star <- mu_star + z95 * sigma_star
+p95_ci <- percentile_ci(p95_star)
+
+p95_hat
+p95_ci
+
+#Non-parametric Type 1
+mu_star_np <- numeric(B)
+sigma_star_np <- numeric(B)
+lambda_star_np <- numeric(B)
+
+for(b in 1:B) {
+  # Resample Type 1 durations with replacement (non-parametric)
+  sim_dur_np <- sample(lengthsType1, size = n_dur, replace = TRUE)
+  mu_star_np[b] <- mean(sim_dur_np)
+  sigma_star_np[b] <- sd(sim_dur_np)
+  
+  # Resample Type 1 daily counts with replacement (non-parametric)
+  sim_counts_np <- sample(daily_counts_type1, size = n_days, replace = TRUE)
+  lambda_star_np[b] <- mean(sim_counts_np)
+}
+
+# Non-parametric percentile CIs
+mu_ci_np <- percentile_ci(mu_star_np)
+sigma_ci_np <- percentile_ci(sigma_star_np)
+lambda_ci_np <- percentile_ci(lambda_star_np)
+
+mu_ci_np
+sigma_ci_np
+lambda_ci_np
+
+# p95 using (mu*, sigma*) from the NON-parametric bootstrap
+p95_star_np <- mu_star_np + z95 * sigma_star_np
+p95_ci_np <- percentile_ci(p95_star_np)
+
+p95_ci_np
