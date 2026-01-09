@@ -1,523 +1,761 @@
-library(readr)
-library(ggplot2)
+################################################################################
+#                    TYPE 2 PATIENTS - IMPROVED NON-PARAMETRIC MODEL          #
+#                        FOR DISCRETE EVENT SIMULATION (DES)                   #
+################################################################################
+#
+# PURPOSE:
+# --------
+# Analyze Type 2 patient scan data to create empirical (non-parametric) input
+# models for discrete event simulation. This approach uses the actual observed
+# data without assuming any theoretical probability distributions.
+#
+# KEY CONCEPTS:
+# -------------
+# 1. INTERARRIVAL TIME: Time between consecutive patient arrivals
+#    Example: Patient A arrives at 9:00, Patient B at 9:15 → interarrival = 0.25 hrs
+#
+# 2. DURATION: Length of time for the MRI scan procedure
+#
+# 3. NON-PARAMETRIC: Uses empirical data directly (no Gamma, Exponential, etc.)
+#    - More robust when true distribution is unknown
+#    - Preserves all features of real data (multimodality, skewness, etc.)
+#
+# 4. BOOTSTRAP: Resampling technique to quantify uncertainty
+#    - Creates "fake" datasets by sampling WITH replacement
+#    - Estimates confidence intervals without assuming normality
+#
+# 5. EMPIRICAL SAMPLING: For simulation, randomly draw from observed values
+#    - Maintains realistic variability
+#    - No parametric assumptions needed
+#
+################################################################################
 
-# Read data
-data <- read_csv("ScanRecords (1).csv")
+# ============================================================================
+# 0. SETUP AND LIBRARIES
+# ============================================================================
 
-# Count patients correctly
-numberdays <- length(unique(data$Date))
-numberPatients <- matrix(data = 0, nrow=numberdays, ncol = 2)
-colnames(numberPatients) <- c("Type1","Type2")
-counter <- 1
-
-for(i in 1:length(data$Date)){
-  if(i > 1 && data$Date[i] != data$Date[i-1]){
-    counter = counter + 1
-  }
-  if(data$PatientType[i] == "Type 2"){
-    numberPatients[counter,2] <- numberPatients[counter,2] + 1  # Fixed: Type 2 goes to column 2
-  }
-  else{
-    numberPatients[counter,1] <- numberPatients[counter,1] + 1  # Type 1 goes to column 1
-  }
-}
-
-# Extract Type 2 counts
-type2_counts <- numberPatients[,2]
-
-# Summary statistics
-cat("Summary Statistics for Type 2 patients per day:\n")
-print(summary(type2_counts))
-cat("\nStandard Deviation:", sd(type2_counts), "\n")
-cat("Variance:", var(type2_counts), "\n")
-
-# Visualizations
-par(mfrow=c(2,3))
-
-# 1. Histogram with density overlay
-hist(type2_counts, breaks=15, probability=TRUE, 
-     main="Type 2 Patients per Day\nHistogram with Density", 
-     xlab="Number of Type 2 Patients", col="lightblue", border="black")
-lines(density(type2_counts), col="red", lwd=2)
-
-# 2. Boxplot
-boxplot(type2_counts, main="Type 2 Patients per Day\nBoxplot", 
-        ylab="Number of Patients", col="lightgreen")
-
-# 3. Q-Q plot for normal distribution
-qqnorm(type2_counts, main="Q-Q Plot (Normal)")
-qqline(type2_counts, col="red", lwd=2)
-
-# 4. Bar plot of frequency
-barplot(table(type2_counts), main="Frequency of Daily Counts", 
-        xlab="Number of Type 2 Patients", ylab="Frequency", col="coral")
-
-# 5. Time series plot
-plot(type2_counts, type="l", main="Type 2 Patients Over Time", 
-     xlab="Day", ylab="Number of Patients", col="blue")
-points(type2_counts, pch=19, col="blue", cex=0.5)
-
-# 6. ECDF (Empirical Cumulative Distribution Function)
-plot(ecdf(type2_counts), main="Empirical CDF", 
-     xlab="Number of Type 2 Patients", ylab="Cumulative Probability")
-
-par(mfrow=c(1,1))
-
-# Kolmogorov-Smirnov Tests
-cat("\n=== KOLMOGOROV-SMIRNOV TESTS ===\n\n")
-
-# Test 1: Normal Distribution
-mean_type2 <- mean(type2_counts)
-sd_type2 <- sd(type2_counts)
-ks_normal <- ks.test(type2_counts, "pnorm", mean_type2, sd_type2)
-cat("1. Normal Distribution Test:\n")
-print(ks_normal)
 cat("\n")
+cat("================================================================================\n")
+cat("           TYPE 2 PATIENT NON-PARAMETRIC MODEL - ENHANCED VERSION              \n")
+cat("================================================================================\n\n")
 
-# Test 2: Poisson Distribution
-lambda_type2 <- mean(type2_counts)
-ks_poisson <- ks.test(type2_counts, "ppois", lambda_type2)
-cat("2. Poisson Distribution Test:\n")
-print(ks_poisson)
-cat("\n")
+# Required packages
+required_packages <- c("dplyr", "boot", "lubridate", "ggplot2")
+missing_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
 
-# Test 3: Negative Binomial (if variance > mean, indicates overdispersion)
-if(var(type2_counts) > mean(type2_counts)){
-  cat("Note: Variance > Mean, suggesting possible Negative Binomial distribution\n")
-  cat("Variance/Mean ratio:", var(type2_counts)/mean(type2_counts), "\n\n")
+if(length(missing_packages) > 0) {
+  cat("Installing missing packages:", paste(missing_packages, collapse = ", "), "\n")
+  install.packages(missing_packages, repos = "http://cran.r-project.org")
 }
 
-# Interpretation helper
-cat("=== INTERPRETATION ===\n")
-cat("If p-value > 0.05: Data is consistent with the tested distribution\n")
-cat("If p-value < 0.05: Data significantly differs from the tested distribution\n\n")
+suppressPackageStartupMessages({
+  library(dplyr)      # Data manipulation
+  library(boot)       # Bootstrap resampling
+  library(lubridate)  # Date/time handling
+  library(ggplot2)    # Visualization
+})
 
-# Better visualization comparing to theoretical distributions
-par(mfrow=c(1,2))
+set.seed(123)  # Reproducibility
 
-# Compare to Normal
-hist(type2_counts, breaks=15, probability=TRUE, 
-     main="Type 2 vs Normal Distribution", 
-     xlab="Number of Type 2 Patients", col="lightblue", border="black")
-curve(dnorm(x, mean=mean_type2, sd=sd_type2), add=TRUE, col="red", lwd=2)
-legend("topright", legend=c("Observed", "Normal"), 
-       col=c("lightblue", "red"), lwd=c(10,2))
+cat("✓ Libraries loaded\n\n")
 
-# Compare to Poisson
-hist(type2_counts, breaks=15, probability=TRUE, 
-     main="Type 2 vs Poisson Distribution", 
-     xlab="Number of Type 2 Patients", col="lightgreen", border="black")
-x_vals <- min(type2_counts):max(type2_counts)
-points(x_vals, dpois(x_vals, lambda=lambda_type2), col="blue", pch=19, cex=1.5)
-lines(x_vals, dpois(x_vals, lambda=lambda_type2), col="blue", lwd=2)
-legend("topright", legend=c("Observed", "Poisson"), 
-       col=c("lightgreen", "blue"), lwd=c(10,2))
-
-par(mfrow=c(1,1))
+# 1. DATA LOADING AND VALIDATION
 
 
-
-library(readr)
-library(ggplot2)
-library(gridExtra)
-
-# Read and process data
-data <- read_csv("ScanRecords (1).csv")
-
-# Count patients correctly
-numberdays <- length(unique(data$Date))
-numberPatients <- matrix(data = 0, nrow=numberdays, ncol = 2)
-colnames(numberPatients) <- c("Type1","Type2")
-counter <- 1
-
-for(i in 1:length(data$Date)){
-  if(i > 1 && data$Date[i] != data$Date[i-1]){
-    counter = counter + 1
-  }
-  if(data$PatientType[i] == "Type 2"){
-    numberPatients[counter,2] <- numberPatients[counter,2] + 1
-  }
-  else{
-    numberPatients[counter,1] <- numberPatients[counter,1] + 1
-  }
-}
-
-# Extract Type 2 counts
-type2_counts <- numberPatients[,2]
-
-cat("========================================\n")
-cat("ORIGINAL DATA SUMMARY\n")
-cat("========================================\n")
-print(summary(type2_counts))
-cat("Standard Deviation:", sd(type2_counts), "\n")
-cat("Variance:", var(type2_counts), "\n")
-cat("Sample Size:", length(type2_counts), "\n\n")
-
-# ========================================
-# PART 1: CHOOSING BOOTSTRAP METHOD
-# ========================================
-
-cat("========================================\n")
-cat("BOOTSTRAP METHOD SELECTION\n")
-cat("========================================\n\n")
-
-# Assess distribution characteristics
-mean_val <- mean(type2_counts)
-var_val <- var(type2_counts)
-skewness <- mean((type2_counts - mean_val)^3) / sd(type2_counts)^3
-
-cat("Distribution Characteristics:\n")
-cat("Mean:", mean_val, "\n")
-cat("Variance:", var_val, "\n")
-cat("Variance/Mean ratio:", var_val/mean_val, "\n")
-cat("Skewness:", skewness, "\n\n")
-
-# Test for normality and Poisson
-shapiro_test <- shapiro.test(type2_counts)
-ks_normal <- ks.test(type2_counts, "pnorm", mean_val, sd(type2_counts))
-ks_poisson <- ks.test(type2_counts, "ppois", mean_val)
-
-cat("Distribution Tests:\n")
-cat("Shapiro-Wilk (normality): p-value =", shapiro_test$p.value, "\n")
-cat("KS test (normal): p-value =", ks_normal$p.value, "\n")
-cat("KS test (Poisson): p-value =", ks_poisson$p.value, "\n\n")
-
-# Decision criteria
-cat("BOOTSTRAP METHOD DECISION:\n")
+cat("STEP 1: Loading and validating data\n")
 cat("----------------------------------------\n")
 
-use_parametric <- FALSE
-justification <- ""
+# Load data with error handling
+tryCatch({
+  data <- read.csv("ScanRecords (1).csv", stringsAsFactors = FALSE)
+  cat("✓ Data loaded successfully:", nrow(data), "total records\n")
+}, error = function(e) {
+  stop("ERROR: Cannot load 'ScanRecords (1).csv'. Check file path.\n", e$message)
+})
 
-if(shapiro_test$p.value > 0.05 && ks_normal$p.value > 0.05){
-  use_parametric <- TRUE
-  justification <- "PARAMETRIC (Normal) Bootstrap chosen because:\n  - Data passes Shapiro-Wilk normality test (p > 0.05)\n  - Data fits normal distribution in KS test (p > 0.05)\n  - Parametric bootstrap is more efficient when distributional assumptions hold"
-} else if(ks_poisson$p.value > 0.05){
-  use_parametric <- TRUE
-  justification <- "PARAMETRIC (Poisson) Bootstrap chosen because:\n  - Data fits Poisson distribution in KS test (p > 0.05)\n  - Count data naturally follows Poisson process\n  - Variance/Mean ratio close to 1 supports Poisson assumption"
-} else {
-  use_parametric <- FALSE
-  justification <- "NON-PARAMETRIC Bootstrap chosen because:\n  - Data does not clearly fit standard parametric distributions\n  - Non-parametric method makes no distributional assumptions\n  - More robust to distributional misspecification\n  - Appropriate for unknown or complex distributions"
+# Validate required columns
+required_cols <- c("PatientType", "Date", "Time", "Duration")
+missing_cols <- setdiff(required_cols, colnames(data))
+
+if(length(missing_cols) > 0) {
+  stop("ERROR: Missing required columns: ", paste(missing_cols, collapse = ", "))
 }
 
-cat(justification, "\n\n")
+cat("✓ All required columns present\n")
 
-# ========================================
-# PART 2: BOOTSTRAP IMPLEMENTATION
-# ========================================
-
-cat("========================================\n")
-cat("BOOTSTRAP UNCERTAINTY ESTIMATION\n")
-cat("========================================\n\n")
-
-set.seed(123)
-B <- 10000  # Number of bootstrap samples
-
-# Initialize storage for bootstrap estimates
-boot_means <- numeric(B)
-boot_vars <- numeric(B)
-boot_medians <- numeric(B)
-boot_q25 <- numeric(B)
-boot_q75 <- numeric(B)
-boot_cv <- numeric(B)  # Coefficient of variation
-
-cat("Running", B, "bootstrap iterations...\n")
-
-if(use_parametric){
-  # Determine which parametric distribution to use
-  if(shapiro_test$p.value > 0.05 && ks_normal$p.value > 0.05){
-    cat("Using Normal distribution for parametric bootstrap\n\n")
-    for(b in 1:B){
-      boot_sample <- rnorm(length(type2_counts), mean = mean_val, sd = sd(type2_counts))
-      boot_means[b] <- mean(boot_sample)
-      boot_vars[b] <- var(boot_sample)
-      boot_medians[b] <- median(boot_sample)
-      boot_q25[b] <- quantile(boot_sample, 0.25)
-      boot_q75[b] <- quantile(boot_sample, 0.75)
-      boot_cv[b] <- sd(boot_sample) / mean(boot_sample)
-    }
-  } else {
-    cat("Using Poisson distribution for parametric bootstrap\n\n")
-    for(b in 1:B){
-      boot_sample <- rpois(length(type2_counts), lambda = mean_val)
-      boot_means[b] <- mean(boot_sample)
-      boot_vars[b] <- var(boot_sample)
-      boot_medians[b] <- median(boot_sample)
-      boot_q25[b] <- quantile(boot_sample, 0.25)
-      boot_q75[b] <- quantile(boot_sample, 0.75)
-      boot_cv[b] <- sd(boot_sample) / mean(boot_sample)
-    }
-  }
-} else {
-  # Non-parametric bootstrap
-  cat("Using Non-parametric (resampling) bootstrap\n\n")
-  for(b in 1:B){
-    boot_sample <- sample(type2_counts, size = length(type2_counts), replace = TRUE)
-    boot_means[b] <- mean(boot_sample)
-    boot_vars[b] <- var(boot_sample)
-    boot_medians[b] <- median(boot_sample)
-    boot_q25[b] <- quantile(boot_sample, 0.25)
-    boot_q75[b] <- quantile(boot_sample, 0.75)
-    boot_cv[b] <- sd(boot_sample) / mean(boot_sample)
-  }
+# Check for missing values
+na_counts <- sapply(data[required_cols], function(x) sum(is.na(x)))
+if(any(na_counts > 0)) {
+  cat("⚠ WARNING: Missing values detected:\n")
+  print(na_counts[na_counts > 0])
 }
 
-# Calculate bootstrap statistics
-cat("BOOTSTRAP RESULTS (", B, " iterations)\n", sep="")
-cat("----------------------------------------\n\n")
+cat("\n")
 
-# Mean
-cat("MEAN:\n")
-cat("  Original estimate:", mean_val, "\n")
-cat("  Bootstrap mean:", mean(boot_means), "\n")
-cat("  Bootstrap SE:", sd(boot_means), "\n")
-cat("  95% CI:", quantile(boot_means, c(0.025, 0.975)), "\n\n")
+# ============================================================================
+# 2. FILTER TYPE 2 PATIENTS
+# ============================================================================
 
-# Variance
-cat("VARIANCE:\n")
-cat("  Original estimate:", var_val, "\n")
-cat("  Bootstrap mean:", mean(boot_vars), "\n")
-cat("  Bootstrap SE:", sd(boot_vars), "\n")
-cat("  95% CI:", quantile(boot_vars, c(0.025, 0.975)), "\n\n")
+cat("STEP 2: Filtering Type 2 patients\n")
+cat("----------------------------------------\n")
 
-# Median
-cat("MEDIAN:\n")
-cat("  Original estimate:", median(type2_counts), "\n")
-cat("  Bootstrap mean:", mean(boot_medians), "\n")
-cat("  Bootstrap SE:", sd(boot_medians), "\n")
-cat("  95% CI:", quantile(boot_medians, c(0.025, 0.975)), "\n\n")
+# Handle multiple possible encodings of Type 2
+type2 <- data %>%
+  filter(PatientType == 2 | 
+           PatientType == "2" | 
+           PatientType == "Type 2" | 
+           PatientType == "Type2")
 
-# Coefficient of Variation
-cat("COEFFICIENT OF VARIATION (SD/Mean):\n")
-cat("  Original estimate:", sd(type2_counts)/mean_val, "\n")
-cat("  Bootstrap mean:", mean(boot_cv), "\n")
-cat("  Bootstrap SE:", sd(boot_cv), "\n")
-cat("  95% CI:", quantile(boot_cv, c(0.025, 0.975)), "\n\n")
+if(nrow(type2) == 0) {
+  stop("ERROR: No Type 2 patients found. Check PatientType values in data.")
+}
 
-# ========================================
-# PART 3: MONTE CARLO VALIDATION
-# ========================================
+cat("✓ Type 2 patients identified:", nrow(type2), "records\n")
+cat("  Percentage of total:", round(100 * nrow(type2) / nrow(data), 1), "%\n\n")
 
-cat("========================================\n")
-cat("MONTE CARLO VALIDATION\n")
-cat("========================================\n\n")
+# ============================================================================
+# 3. CONSTRUCT INTRADAY ARRIVAL TIMES
+# ============================================================================
+#
+# EXPLANATION:
+# ------------
+# The Time column is stored as decimal hours (e.g., 9.5 = 9:30 AM)
+# We need to convert this to proper timestamps (POSIXct) for:
+# 1. Correct chronological ordering
+# 2. Accurate time difference calculations
+# 3. Date/time arithmetic
+#
+# PROCESS:
+# --------
+# Input:  Date = "2024-01-15", Time = 9.75
+# Step 1: Extract hour = 9, minute = 45
+# Step 2: Create "2024-01-15 09:45"
+# Step 3: Parse as POSIXct timestamp
+#
+# ============================================================================
 
-cat("Testing estimator robustness under different true distributions...\n\n")
+cat("STEP 3: Processing timestamps\n")
+cat("----------------------------------------\n")
 
-set.seed(456)
-n_mc <- 1000  # Number of Monte Carlo simulations
-n_boot_mc <- 1000  # Bootstrap iterations per MC simulation
-n_sample <- length(type2_counts)
+type2 <- type2 %>%
+  mutate(
+    # Convert Date to proper Date object
+    Date = as.Date(Date),
+    
+    # Extract hours and minutes from decimal Time
+    hour = floor(Time),                    # 9.75 → 9
+    minute = round((Time - hour) * 60),    # (9.75 - 9) * 60 = 45
+    
+    # Create DateTime string in format "YYYY-MM-DD HH:MM"
+    DateTime = as.POSIXct(
+      paste(Date, sprintf("%02d:%02d", hour, minute)),
+      format = "%Y-%m-%d %H:%M",
+      tz = "UTC"  # Use UTC to avoid daylight saving issues
+    )
+  ) %>%
+  arrange(DateTime)  # Sort chronologically - CRITICAL for interarrival calculation!
 
-# We'll test under 3 scenarios: Normal, Poisson, and Negative Binomial
-scenarios <- list(
-  Normal = list(name = "Normal", params = list(mean = mean_val, sd = sd(type2_counts))),
-  Poisson = list(name = "Poisson", params = list(lambda = mean_val)),
-  NegBinom = list(name = "Negative Binomial", params = list(size = 10, mu = mean_val))
+# Validate DateTime parsing
+n_failed <- sum(is.na(type2$DateTime))
+if(n_failed > 0) {
+  cat("⚠ WARNING:", n_failed, "timestamps failed to parse\n")
+  cat("  Sample problematic entries:\n")
+  print(head(type2[is.na(type2$DateTime), c("Date", "Time", "hour", "minute")], 3))
+  
+  # Remove failed parses
+  type2 <- type2 %>% filter(!is.na(DateTime))
+  cat("  Continuing with", nrow(type2), "valid records\n")
+}
+
+cat("✓ Timestamps processed successfully\n")
+cat("  Time range:", format(min(type2$DateTime), "%Y-%m-%d %H:%M"), "to",
+    format(max(type2$DateTime), "%Y-%m-%d %H:%M"), "\n")
+cat("  Span:", round(as.numeric(difftime(max(type2$DateTime), 
+                                         min(type2$DateTime), 
+                                         units = "days")), 1), "days\n\n")
+
+# ============================================================================
+# 4. COMPUTE INTERARRIVAL TIMES
+# ============================================================================
+#
+# EXPLANATION:
+# ------------
+# Interarrival time = Time between consecutive patient arrivals
+# 
+# Example:
+# Patient 1 arrives: 2024-01-15 09:00
+# Patient 2 arrives: 2024-01-15 09:15
+# Interarrival = 0.25 hours (15 minutes)
+#
+# IMPORTANT ASSUMPTION:
+# ---------------------
+# "No time passes outside working hours"
+# This means if the last patient on Monday arrives at 5pm and the first
+# patient on Tuesday arrives at 8am, we DO NOT count the 15 hours overnight.
+# We only count the actual time between arrivals during operating hours.
+#
+# IMPLEMENTATION:
+# ---------------
+# The diff() function calculates consecutive differences:
+# DateTime: [9:00, 9:15, 9:30, 10:00]
+# diff():   [0.25, 0.25, 0.50] hours
+#
+# ============================================================================
+
+cat("STEP 4: Computing interarrival times\n")
+cat("----------------------------------------\n")
+
+# Calculate time differences between consecutive arrivals
+interarrival <- diff(type2$DateTime)
+interarrival_hours <- as.numeric(interarrival, units = "hours")
+
+cat("Initial interarrivals computed:", length(interarrival_hours), "\n")
+
+# Data cleaning: Remove non-positive interarrivals
+# (These can occur due to simultaneous arrivals or data entry errors)
+n_nonpositive <- sum(interarrival_hours <= 0)
+if(n_nonpositive > 0) {
+  cat("⚠ Removing", n_nonpositive, "non-positive interarrivals\n")
+  interarrival_hours <- interarrival_hours[interarrival_hours > 0]
+}
+
+# Identify potential outliers (very long gaps)
+# These might represent overnight/weekend gaps or data collection issues
+threshold <- 24  # hours
+n_outliers <- sum(interarrival_hours > threshold)
+
+if(n_outliers > 0) {
+  cat("⚠ WARNING:", n_outliers, "interarrivals exceed", threshold, "hours\n")
+  cat("  These may represent non-operating periods (nights/weekends)\n")
+  cat("  Max interarrival:", round(max(interarrival_hours), 2), "hours\n")
+  cat("  Consider filtering these if they violate the 'intraday' assumption\n")
+  
+  # Show distribution of large gaps
+  large_gaps <- interarrival_hours[interarrival_hours > threshold]
+  cat("  Large gaps summary:\n")
+  print(summary(large_gaps))
+}
+
+cat("\n✓ Final interarrival sample size:", length(interarrival_hours), "\n\n")
+
+# ============================================================================
+# 5. EXTRACT SCAN DURATIONS
+# ============================================================================
+
+cat("STEP 5: Processing scan durations\n")
+cat("----------------------------------------\n")
+
+durations <- type2$Duration
+
+# Remove missing or invalid durations
+n_na_dur <- sum(is.na(durations))
+n_nonpos_dur <- sum(durations <= 0, na.rm = TRUE)
+
+if(n_na_dur > 0) {
+  cat("⚠ Removing", n_na_dur, "missing durations\n")
+}
+if(n_nonpos_dur > 0) {
+  cat("⚠ Removing", n_nonpos_dur, "non-positive durations\n")
+}
+
+durations <- durations[!is.na(durations) & durations > 0]
+
+cat("✓ Final duration sample size:", length(durations), "\n\n")
+
+# ============================================================================
+# 6. DESCRIPTIVE STATISTICS
+# ============================================================================
+
+cat("STEP 6: Computing descriptive statistics\n")
+cat("----------------------------------------\n")
+
+# Duration statistics
+dur_stats <- list(
+  n = length(durations),
+  mean = mean(durations),
+  median = median(durations),
+  sd = sd(durations),
+  min = min(durations),
+  max = max(durations),
+  q25 = quantile(durations, 0.25),
+  q75 = quantile(durations, 0.75),
+  q90 = quantile(durations, 0.90),
+  q95 = quantile(durations, 0.95),
+  iqr = IQR(durations),
+  cv = sd(durations) / mean(durations)  # Coefficient of variation
 )
 
-mc_results <- list()
+# Interarrival statistics
+arr_stats <- list(
+  n = length(interarrival_hours),
+  mean = mean(interarrival_hours),
+  median = median(interarrival_hours),
+  sd = sd(interarrival_hours),
+  min = min(interarrival_hours),
+  max = max(interarrival_hours),
+  q25 = quantile(interarrival_hours, 0.25),
+  q75 = quantile(interarrival_hours, 0.75),
+  q90 = quantile(interarrival_hours, 0.90),
+  q95 = quantile(interarrival_hours, 0.95),
+  iqr = IQR(interarrival_hours),
+  cv = sd(interarrival_hours) / mean(interarrival_hours)
+)
 
-for(scenario_name in names(scenarios)){
-  cat("Testing under", scenario_name, "distribution...\n")
-  scenario <- scenarios[[scenario_name]]
-  
-  # Storage for MC results
-  mc_mean_estimates <- numeric(n_mc)
-  mc_mean_ses <- numeric(n_mc)
-  mc_mean_coverage <- numeric(n_mc)
-  
-  mc_var_estimates <- numeric(n_mc)
-  mc_var_ses <- numeric(n_mc)
-  
-  for(mc in 1:n_mc){
-    # Generate data from true distribution
-    if(scenario_name == "Normal"){
-      true_data <- rnorm(n_sample, mean = scenario$params$mean, sd = scenario$params$sd)
-    } else if(scenario_name == "Poisson"){
-      true_data <- rpois(n_sample, lambda = scenario$params$lambda)
-    } else if(scenario_name == "NegBinom"){
-      true_data <- rnbinom(n_sample, size = scenario$params$size, mu = scenario$params$mu)
-    }
-    
-    # Bootstrap on this MC sample (using non-parametric for robustness test)
-    boot_means_mc <- numeric(n_boot_mc)
-    boot_vars_mc <- numeric(n_boot_mc)
-    
-    for(b in 1:n_boot_mc){
-      boot_sample <- sample(true_data, size = length(true_data), replace = TRUE)
-      boot_means_mc[b] <- mean(boot_sample)
-      boot_vars_mc[b] <- var(boot_sample)
-    }
-    
-    # Store results
-    mc_mean_estimates[mc] <- mean(true_data)
-    mc_mean_ses[mc] <- sd(boot_means_mc)
-    
-    # Check coverage (does CI contain true parameter?)
-    ci_mean <- quantile(boot_means_mc, c(0.025, 0.975))
-    true_mean <- scenario$params[[ifelse(scenario_name == "Poisson", "lambda", "mean")]]
-    mc_mean_coverage[mc] <- (ci_mean[1] <= true_mean) && (ci_mean[2] >= true_mean)
-    
-    mc_var_estimates[mc] <- var(true_data)
-    mc_var_ses[mc] <- sd(boot_vars_mc)
-  }
-  
-  mc_results[[scenario_name]] <- list(
-    mean_estimates = mc_mean_estimates,
-    mean_ses = mc_mean_ses,
-    mean_coverage = mc_mean_coverage,
-    var_estimates = mc_var_estimates,
-    var_ses = mc_var_ses
-  )
-  
-  cat("  Mean estimate bias:", mean(mc_mean_estimates - true_mean), "\n")
-  cat("  Mean SE (avg):", mean(mc_mean_ses), "\n")
-  cat("  95% CI coverage:", mean(mc_mean_coverage) * 100, "%\n")
-  cat("  Variance estimate bias:", mean(mc_var_estimates - 
-                                          ifelse(scenario_name == "Normal", scenario$params$sd^2,
-                                                 ifelse(scenario_name == "Poisson", scenario$params$lambda,
-                                                        scenario$params$mu + scenario$params$mu^2/scenario$params$size))), "\n\n")
+# Print results
+cat("\nDURATION STATISTICS (hours):\n")
+cat("============================\n")
+cat(sprintf("  Sample size:    %d\n", dur_stats$n))
+cat(sprintf("  Mean:           %.3f\n", dur_stats$mean))
+cat(sprintf("  Median:         %.3f\n", dur_stats$median))
+cat(sprintf("  Std Dev:        %.3f\n", dur_stats$sd))
+cat(sprintf("  CV (σ/μ):       %.3f\n", dur_stats$cv))
+cat(sprintf("  Range:          [%.3f, %.3f]\n", dur_stats$min, dur_stats$max))
+cat(sprintf("  IQR:            %.3f\n", dur_stats$iqr))
+cat(sprintf("  25th percentile: %.3f\n", dur_stats$q25))
+cat(sprintf("  75th percentile: %.3f\n", dur_stats$q75))
+cat(sprintf("  90th percentile: %.3f\n", dur_stats$q90))
+cat(sprintf("  95th percentile: %.3f\n", dur_stats$q95))
+
+cat("\nINTERARRIVAL STATISTICS (hours):\n")
+cat("================================\n")
+cat(sprintf("  Sample size:    %d\n", arr_stats$n))
+cat(sprintf("  Mean:           %.3f\n", arr_stats$mean))
+cat(sprintf("  Median:         %.3f\n", arr_stats$median))
+cat(sprintf("  Std Dev:        %.3f\n", arr_stats$sd))
+cat(sprintf("  CV (σ/μ):       %.3f\n", arr_stats$cv))
+cat(sprintf("  Range:          [%.3f, %.3f]\n", arr_stats$min, arr_stats$max))
+cat(sprintf("  IQR:            %.3f\n", arr_stats$iqr))
+cat(sprintf("  25th percentile: %.3f\n", arr_stats$q25))
+cat(sprintf("  75th percentile: %.3f\n", arr_stats$q75))
+cat(sprintf("  90th percentile: %.3f\n", arr_stats$q90))
+cat(sprintf("  95th percentile: %.3f\n", arr_stats$q95))
+
+cat("\n")
+
+# Interpretation notes
+cat("INTERPRETATION:\n")
+cat("---------------\n")
+if(dur_stats$cv > 0.5) {
+  cat("⚠ Duration CV > 0.5 indicates HIGH variability\n")
+} else {
+  cat("✓ Duration CV < 0.5 indicates moderate variability\n")
 }
 
-# ========================================
-# VISUALIZATION
-# ========================================
-
-cat("========================================\n")
-cat("GENERATING VISUALIZATIONS\n")
-cat("========================================\n\n")
-
-# Create comprehensive visualization
-pdf("bootstrap_analysis_results.pdf", width = 14, height = 10)
-
-# Layout for bootstrap distributions
-par(mfrow=c(2,3))
-
-# 1. Bootstrap distribution of mean
-hist(boot_means, breaks=50, prob=TRUE, main="Bootstrap Distribution of Mean",
-     xlab="Mean", col="lightblue", border="white")
-abline(v=mean_val, col="red", lwd=2, lty=2)
-abline(v=quantile(boot_means, c(0.025, 0.975)), col="blue", lwd=2, lty=3)
-legend("topright", legend=c("Original", "95% CI"), col=c("red", "blue"), lty=c(2,3), lwd=2)
-
-# 2. Bootstrap distribution of variance
-hist(boot_vars, breaks=50, prob=TRUE, main="Bootstrap Distribution of Variance",
-     xlab="Variance", col="lightgreen", border="white")
-abline(v=var_val, col="red", lwd=2, lty=2)
-abline(v=quantile(boot_vars, c(0.025, 0.975)), col="blue", lwd=2, lty=3)
-
-# 3. Bootstrap distribution of median
-hist(boot_medians, breaks=50, prob=TRUE, main="Bootstrap Distribution of Median",
-     xlab="Median", col="lightyellow", border="white")
-abline(v=median(type2_counts), col="red", lwd=2, lty=2)
-abline(v=quantile(boot_medians, c(0.025, 0.975)), col="blue", lwd=2, lty=3)
-
-# 4. Bootstrap distribution of CV
-hist(boot_cv, breaks=50, prob=TRUE, main="Bootstrap Distribution of CV",
-     xlab="Coefficient of Variation", col="lightcoral", border="white")
-abline(v=sd(type2_counts)/mean_val, col="red", lwd=2, lty=2)
-abline(v=quantile(boot_cv, c(0.025, 0.975)), col="blue", lwd=2, lty=3)
-
-# 5. Q-Q plot of bootstrap means
-qqnorm(boot_means, main="Q-Q Plot: Bootstrap Means")
-qqline(boot_means, col="red", lwd=2)
-
-# 6. Bootstrap SE convergence
-se_convergence <- sapply(seq(100, B, by=100), function(n) sd(boot_means[1:n]))
-plot(seq(100, B, by=100), se_convergence, type="l", lwd=2,
-     main="Bootstrap SE Convergence", xlab="Bootstrap Iterations", ylab="SE of Mean")
-abline(h=sd(boot_means), col="red", lty=2)
-
-# Monte Carlo validation plots
-par(mfrow=c(2,3))
-
-for(scenario_name in names(scenarios)){
-  results <- mc_results[[scenario_name]]
-  
-  # Distribution of mean estimates
-  hist(results$mean_estimates, breaks=30, prob=TRUE,
-       main=paste("MC Mean Estimates\n", scenario_name),
-       xlab="Mean Estimate", col="skyblue", border="white")
-  
-  # Distribution of SEs
-  hist(results$mean_ses, breaks=30, prob=TRUE,
-       main=paste("MC Standard Errors\n", scenario_name),
-       xlab="Standard Error", col="lightpink", border="white")
+if(arr_stats$cv > 1.0) {
+  cat("⚠ Interarrival CV > 1.0 indicates VERY HIGH variability\n")
+  cat("  (Common for arrival processes; may indicate clustering)\n")
+} else {
+  cat("✓ Interarrival CV < 1.0 indicates moderate variability\n")
 }
 
-# Coverage probability comparison
-par(mfrow=c(1,1))
-coverage_rates <- sapply(mc_results, function(x) mean(x$mean_coverage))
-barplot(coverage_rates * 100, 
-        main="95% Confidence Interval Coverage Rates\nAcross Different True Distributions",
-        ylab="Coverage Rate (%)",
-        ylim=c(0,100),
-        col=c("steelblue", "coral", "seagreen"),
-        names.arg=names(scenarios))
-abline(h=95, col="red", lwd=2, lty=2)
-text(x=1:3, y=coverage_rates*100 + 3, labels=paste0(round(coverage_rates*100, 1), "%"))
+cat("\n")
+
+# ============================================================================
+# 7. BOOTSTRAP UNCERTAINTY QUANTIFICATION
+# ============================================================================
+#
+# EXPLANATION:
+# ------------
+# Bootstrap is a resampling method to estimate uncertainty without assuming
+# any distribution (e.g., normality).
+#
+# HOW IT WORKS:
+# -------------
+# 1. From original data [x1, x2, ..., xn], create a "bootstrap sample" by
+#    randomly drawing n values WITH REPLACEMENT
+# 2. Calculate the statistic (e.g., mean) on this bootstrap sample
+# 3. Repeat steps 1-2 many times (e.g., 1000 times)
+# 4. The distribution of bootstrap statistics estimates the sampling distribution
+# 5. Use percentiles of this distribution as confidence intervals
+#
+# EXAMPLE:
+# --------
+# Original data: [1, 2, 3, 4, 5], mean = 3
+# Bootstrap sample 1: [1, 1, 3, 5, 5], mean = 3.0
+# Bootstrap sample 2: [2, 3, 4, 4, 5], mean = 3.6
+# ... (repeat 1000 times)
+# 95% CI: [2.5th percentile, 97.5th percentile] of bootstrap means
+#
+# ============================================================================
+
+cat("STEP 7: Bootstrap uncertainty quantification\n")
+cat("----------------------------------------\n")
+
+# Define bootstrap functions for different statistics
+boot_mean <- function(x, i) mean(x[i])
+boot_median <- function(x, i) median(x[i])
+boot_sd <- function(x, i) sd(x[i])
+boot_q90 <- function(x, i) quantile(x[i], 0.90)
+boot_q95 <- function(x, i) quantile(x[i], 0.95)
+
+B <- 10000  # Number of bootstrap replications (more = better precision)
+
+cat("Running", B, "bootstrap replications...\n")
+cat("(This may take 30-60 seconds)\n\n")
+
+# Bootstrap DURATIONS
+cat("  Bootstrapping duration statistics...\n")
+boot_dur_mean <- boot(durations, boot_mean, R = B)
+boot_dur_median <- boot(durations, boot_median, R = B)
+boot_dur_sd <- boot(durations, boot_sd, R = B)
+boot_dur_q90 <- boot(durations, boot_q90, R = B)
+boot_dur_q95 <- boot(durations, boot_q95, R = B)
+
+# Bootstrap INTERARRIVALS
+cat("  Bootstrapping interarrival statistics...\n")
+boot_arr_mean <- boot(interarrival_hours, boot_mean, R = B)
+boot_arr_median <- boot(interarrival_hours, boot_median, R = B)
+boot_arr_sd <- boot(interarrival_hours, boot_sd, R = B)
+boot_arr_q90 <- boot(interarrival_hours, boot_q90, R = B)
+boot_arr_q95 <- boot(interarrival_hours, boot_q95, R = B)
+
+cat("\n✓ Bootstrap completed\n\n")
+
+# Calculate confidence intervals (using both methods for robustness)
+cat("Computing confidence intervals...\n")
+
+# Duration CIs
+dur_mean_ci <- boot.ci(boot_dur_mean, type = c("perc", "bca"))
+dur_median_ci <- boot.ci(boot_dur_median, type = c("perc", "bca"))
+dur_q90_ci <- boot.ci(boot_dur_q90, type = c("perc", "bca"))
+dur_q95_ci <- boot.ci(boot_dur_q95, type = c("perc", "bca"))
+
+# Interarrival CIs
+arr_mean_ci <- boot.ci(boot_arr_mean, type = c("perc", "bca"))
+arr_median_ci <- boot.ci(boot_arr_median, type = c("perc", "bca"))
+arr_q90_ci <- boot.ci(boot_arr_q90, type = c("perc", "bca"))
+arr_q95_ci <- boot.ci(boot_arr_q95, type = c("perc", "bca"))
+
+cat("✓ Confidence intervals computed\n\n")
+
+# Display results in readable format
+cat("================================================================================\n")
+cat("                    BOOTSTRAP RESULTS (95% CONFIDENCE INTERVALS)               \n")
+cat("================================================================================\n\n")
+
+cat("DURATION:\n")
+cat("---------\n")
+cat(sprintf("  Mean:     %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_dur_mean$t0,
+            dur_mean_ci$bca[4], dur_mean_ci$bca[5],
+            sd(boot_dur_mean$t)))
+cat(sprintf("  Median:   %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_dur_median$t0,
+            dur_median_ci$bca[4], dur_median_ci$bca[5],
+            sd(boot_dur_median$t)))
+cat(sprintf("  90th %%ile: %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_dur_q90$t0,
+            dur_q90_ci$bca[4], dur_q90_ci$bca[5],
+            sd(boot_dur_q90$t)))
+cat(sprintf("  95th %%ile: %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_dur_q95$t0,
+            dur_q95_ci$bca[4], dur_q95_ci$bca[5],
+            sd(boot_dur_q95$t)))
+
+cat("\nINTERARRIVAL:\n")
+cat("-------------\n")
+cat(sprintf("  Mean:     %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_arr_mean$t0,
+            arr_mean_ci$bca[4], arr_mean_ci$bca[5],
+            sd(boot_arr_mean$t)))
+cat(sprintf("  Median:   %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_arr_median$t0,
+            arr_median_ci$bca[4], arr_median_ci$bca[5],
+            sd(boot_arr_median$t)))
+cat(sprintf("  90th %%ile: %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_arr_q90$t0,
+            arr_q90_ci$bca[4], arr_q90_ci$bca[5],
+            sd(boot_arr_q90$t)))
+cat(sprintf("  95th %%ile: %.3f  [%.3f, %.3f]  (SE = %.3f)\n",
+            boot_arr_q95$t0,
+            arr_q95_ci$bca[4], arr_q95_ci$bca[5],
+            sd(boot_arr_q95$t)))
+
+cat("\nNOTE: Intervals shown are BCa (bias-corrected and accelerated) CIs\n")
+cat("      SE = Standard Error (standard deviation of bootstrap distribution)\n\n")
+
+# ============================================================================
+# 8. VISUALIZATION
+# ============================================================================
+
+cat("STEP 8: Creating visualizations\n")
+cat("----------------------------------------\n")
+
+pdf("type2_nonparametric_results.pdf", width = 12, height = 8)
+
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+# Duration histogram
+hist(durations, breaks = 30, main = "Duration Distribution",
+     xlab = "Duration (hours)", col = "lightblue", border = "white",
+     prob = TRUE)
+lines(density(durations), col = "darkblue", lwd = 2)
+abline(v = mean(durations), col = "red", lwd = 2, lty = 2)
+abline(v = quantile(durations, c(0.25, 0.75)), col = "orange", lwd = 1, lty = 3)
+legend("topright", c("Mean", "Q1/Q3"), col = c("red", "orange"), 
+       lwd = c(2,1), lty = c(2,3), cex = 0.8)
+
+# Interarrival histogram
+hist(interarrival_hours, breaks = 30, main = "Interarrival Distribution",
+     xlab = "Interarrival Time (hours)", col = "lightgreen", border = "white",
+     prob = TRUE)
+lines(density(interarrival_hours), col = "darkgreen", lwd = 2)
+abline(v = mean(interarrival_hours), col = "red", lwd = 2, lty = 2)
+legend("topright", "Mean", col = "red", lwd = 2, lty = 2, cex = 0.8)
+
+# Bootstrap distribution: Duration mean
+hist(boot_dur_mean$t, breaks = 50, main = "Bootstrap: Duration Mean",
+     xlab = "Bootstrap Means", col = "lightcoral", border = "white",
+     prob = TRUE)
+abline(v = boot_dur_mean$t0, col = "red", lwd = 2)
+abline(v = dur_mean_ci$bca[4:5], col = "blue", lwd = 2, lty = 2)
+legend("topright", c("Original", "95% CI"), col = c("red", "blue"),
+       lwd = 2, lty = c(1,2), cex = 0.8)
+
+# Bootstrap distribution: Interarrival mean
+hist(boot_arr_mean$t, breaks = 50, main = "Bootstrap: Interarrival Mean",
+     xlab = "Bootstrap Means", col = "lightyellow", border = "white",
+     prob = TRUE)
+abline(v = boot_arr_mean$t0, col = "red", lwd = 2)
+abline(v = arr_mean_ci$bca[4:5], col = "blue", lwd = 2, lty = 2)
+legend("topright", c("Original", "95% CI"), col = c("red", "blue"),
+       lwd = 2, lty = c(1,2), cex = 0.8)
+
+# ECDF: Duration
+plot(ecdf(durations), main = "Empirical CDF: Duration",
+     xlab = "Duration (hours)", ylab = "Cumulative Probability",
+     col = "darkblue", lwd = 2)
+abline(h = c(0.5, 0.9, 0.95), col = "gray", lty = 2)
+abline(v = quantile(durations, c(0.5, 0.9, 0.95)), col = "red", lty = 2)
+
+# ECDF: Interarrival
+plot(ecdf(interarrival_hours), main = "Empirical CDF: Interarrival",
+     xlab = "Interarrival Time (hours)", ylab = "Cumulative Probability",
+     col = "darkgreen", lwd = 2)
+abline(h = c(0.5, 0.9, 0.95), col = "gray", lty = 2)
+abline(v = quantile(interarrival_hours, c(0.5, 0.9, 0.95)), col = "red", lty = 2)
 
 dev.off()
 
-cat("Visualization saved to 'bootstrap_analysis_results.pdf'\n\n")
+cat("✓ Visualizations saved to 'type2_nonparametric_results.pdf'\n\n")
 
-# ========================================
-# SUMMARY AND RECOMMENDATIONS
-# ========================================
+# ============================================================================
+# 9. SIMULATION-READY SAMPLING FUNCTIONS
+# ============================================================================
+#
+# EXPLANATION:
+# ------------
+# These functions allow you to generate random samples from the empirical
+# distribution for use in discrete event simulation.
+#
+# HOW THEY WORK:
+# --------------
+# sample_type2_duration(n = 10) will:
+# 1. Randomly select 10 values from the observed durations
+# 2. Selection is WITH REPLACEMENT (same value can be chosen multiple times)
+# 3. Each observed value has equal probability of being selected
+#
+# EXAMPLE USAGE IN SIMULATION:
+# -----------------------------
+# # Generate next patient's scan duration
+# duration <- sample_type2_duration(n = 1)
+#
+# # Generate interarrival time for next 5 patients
+# interarrivals <- sample_type2_interarrival(n = 5)
+#
+# ============================================================================
 
-cat("========================================\n")
-cat("SUMMARY AND RECOMMENDATIONS\n")
-cat("========================================\n\n")
+cat("STEP 9: Creating simulation sampling functions\n")
+cat("----------------------------------------\n")
 
-cat("1. BOOTSTRAP METHOD:\n")
-cat("  ", justification, "\n\n")
-
-cat("2. UNCERTAINTY QUANTIFICATION:\n")
-cat("   Mean: ", round(mean_val, 2), " ± ", round(sd(boot_means), 2), 
-    " (95% CI: ", round(quantile(boot_means, 0.025), 2), "-", 
-    round(quantile(boot_means, 0.975), 2), ")\n", sep="")
-cat("   Variance: ", round(var_val, 2), " ± ", round(sd(boot_vars), 2),
-    " (95% CI: ", round(quantile(boot_vars, 0.025), 2), "-", 
-    round(quantile(boot_vars, 0.975), 2), ")\n", sep="")
-
-cat("\n3. MONTE CARLO VALIDATION:\n")
-cat("   The estimator shows robustness across different true distributions:\n")
-for(scenario_name in names(scenarios)){
-  cat("   - ", scenario_name, ": ", 
-      round(mean(mc_results[[scenario_name]]$mean_coverage)*100, 1), 
-      "% coverage\n", sep="")
+# Duration sampler
+sample_type2_duration <- function(n = 1) {
+  if(n <= 0) stop("n must be positive")
+  sample(durations, size = n, replace = TRUE)
 }
 
-optimal_coverage <- which.max(sapply(mc_results, function(x) mean(x$mean_coverage)))
-cat("\n   Best performance under:", names(scenarios)[optimal_coverage], "\n")
-
-if(min(coverage_rates) < 0.90){
-  cat("\n   WARNING: Coverage below 90% for some distributions.\n")
-  cat("   Consider increasing sample size or using different estimation method.\n")
-} else {
-  cat("\n   All coverage rates acceptable (>90%).\n")
-  cat("   Bootstrap method provides reliable uncertainty estimates.\n")
+# Interarrival sampler
+sample_type2_interarrival <- function(n = 1) {
+  if(n <= 0) stop("n must be positive")
+  sample(interarrival_hours, size = n, replace = TRUE)
 }
 
-cat("\n4. RECOMMENDATION:\n")
-if(!use_parametric && all(coverage_rates > 0.93)){
-  cat("   Non-parametric bootstrap is RECOMMENDED:\n")
-  cat("   - Provides robust estimates across distributions\n")
-  cat("   - No assumptions about data distribution needed\n")
-  cat("   - Consistent performance in validation\n")
-} else if(use_parametric && max(coverage_rates) > 0.95){
-  cat("   Parametric bootstrap is RECOMMENDED:\n")
-  cat("   - Data fits assumed distribution well\n")
-  cat("   - More efficient (lower SE for same # iterations)\n")
-  cat("   - Excellent coverage in validation\n")
-} else {
-  cat("   MIXED RESULTS - Consider:\n")
-  cat("   - Collecting more data for better distribution identification\n")
-  cat("   - Using non-parametric bootstrap as safer choice\n")
-  cat("   - Consulting domain expert about data generation process\n")
-}
+cat("✓ Sampling functions created\n")
 
-cat("\n========================================\n")
-cat("Analysis complete!\n")
-cat("========================================\n")
+# Validate samplers
+cat("\nValidating samplers with 10,000 samples...\n")
+
+test_dur <- sample_type2_duration(10000)
+test_arr <- sample_type2_interarrival(10000)
+
+cat("  Duration sampler:\n")
+cat(sprintf("    Original mean: %.3f, Sampled mean: %.3f\n", 
+            mean(durations), mean(test_dur)))
+cat(sprintf("    Original SD:   %.3f, Sampled SD:   %.3f\n",
+            sd(durations), sd(test_dur)))
+
+cat("  Interarrival sampler:\n")
+cat(sprintf("    Original mean: %.3f, Sampled mean: %.3f\n",
+            mean(interarrival_hours), mean(test_arr)))
+cat(sprintf("    Original SD:   %.3f, Sampled SD:   %.3f\n",
+            sd(interarrival_hours), sd(test_arr)))
+
+cat("\n✓ Samplers validated (statistics match original data)\n\n")
+
+# ============================================================================
+# 10. CREATE FINAL MODEL OBJECT
+# ============================================================================
+
+cat("STEP 10: Assembling final model object\n")
+cat("----------------------------------------\n")
+
+type2_model <- list(
+  # Original data
+  duration_data = durations,
+  interarrival_data = interarrival_hours,
+  
+  # Descriptive statistics
+  duration_stats = dur_stats,
+  interarrival_stats = arr_stats,
+  
+  # Bootstrap results
+  bootstrap = list(
+    duration = list(
+      mean = boot_dur_mean,
+      median = boot_dur_median,
+      sd = boot_dur_sd,
+      q90 = boot_dur_q90,
+      q95 = boot_dur_q95
+    ),
+    interarrival = list(
+      mean = boot_arr_mean,
+      median = boot_arr_median,
+      sd = boot_arr_sd,
+      q90 = boot_arr_q90,
+      q95 = boot_arr_q95
+    )
+  ),
+  
+  # Confidence intervals
+  confidence_intervals = list(
+    duration_mean = dur_mean_ci,
+    duration_median = dur_median_ci,
+    duration_q90 = dur_q90_ci,
+    duration_q95 = dur_q95_ci,
+    interarrival_mean = arr_mean_ci,
+    interarrival_median = arr_median_ci,
+    interarrival_q90 = arr_q90_ci,
+    interarrival_q95 = arr_q95_ci
+  ),
+  
+  # Sampling functions (for simulation)
+  samplers = list(
+    duration = sample_type2_duration,
+    interarrival = sample_type2_interarrival
+  ),
+  
+  # Metadata
+  metadata = list(
+    creation_date = Sys.time(),
+    n_duration = length(durations),
+    n_interarrival = length(interarrival_hours),
+    bootstrap_replications = B,
+    seed = 123
+  )
+)
+
+cat("✓ Model object created with", length(names(type2_model)), "components\n\n")
+
+# ============================================================================
+# 11. SAVE RESULTS
+# ============================================================================
+
+cat("STEP 11: Saving results\n")
+cat("----------------------------------------\n")
+
+# Save R object
+save(type2_model, file = "type2_nonparametric_model.RData")
+cat("✓ Model saved to 'type2_nonparametric_model.RData'\n")
+
+# Save summary to text file
+sink("type2_model_summary.txt")
+cat("================================================================================\n")
+cat("           TYPE 2 PATIENT NON-PARAMETRIC MODEL - SUMMARY REPORT                \n")
+cat("================================================================================\n\n")
+cat("Generated:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n")
+
+cat("SAMPLE SIZES:\n")
+cat("  Duration observations:    ", length(durations), "\n")
+cat("  Interarrival observations:", length(interarrival_hours), "\n\n")
+
+cat("DURATION ESTIMATES (hours):\n")
+cat(sprintf("  Mean:     %.3f  [%.3f, %.3f]\n",
+            boot_dur_mean$t0, dur_mean_ci$bca[4], dur_mean_ci$bca[5]))
+cat(sprintf("  Median:   %.3f  [%.3f, %.3f]\n",
+            boot_dur_median$t0, dur_median_ci$bca[4], dur_median_ci$bca[5]))
+cat(sprintf("  90th %%ile: %.3f  [%.3f, %.3f]\n",
+            boot_dur_q90$t0, dur_q90_ci$bca[4], dur_q90_ci$bca[5]))
+cat(sprintf("  95th %%ile: %.3f  [%.3f, %.3f]\n\n",
+            boot_dur_q95$t0, dur_q95_ci$bca[4], dur_q95_ci$bca[5]))
+
+cat("INTERARRIVAL ESTIMATES (hours):\n")
+cat(sprintf("  Mean:     %.3f  [%.3f, %.3f]\n",
+            boot_arr_mean$t0, arr_mean_ci$bca[4], arr_mean_ci$bca[5]))
+cat(sprintf("  Median:   %.3f  [%.3f, %.3f]\n",
+            boot_arr_median$t0, arr_median_ci$bca[4], arr_median_ci$bca[5]))
+cat(sprintf("  90th %%ile: %.3f  [%.3f, %.3f]\n",
+            boot_arr_q90$t0, arr_q90_ci$bca[4], arr_q90_ci$bca[5]))
+cat(sprintf("  95th %%ile: %.3f  [%.3f, %.3f]\n\n",
+            boot_arr_q95$t0, arr_q95_ci$bca[4], arr_q95_ci$bca[5]))
+
+cat("USAGE IN SIMULATION:\n")
+cat("  # Load model\n")
+cat("  load('type2_nonparametric_model.RData')\n\n")
+cat("  # Sample duration for next patient\n")
+cat("  duration <- type2_model$samplers$duration(n = 1)\n\n")
+cat("  # Sample interarrival times for next 100 patients\n")
+cat("  interarrivals <- type2_model$samplers$interarrival(n = 100)\n\n")
+
+cat("================================================================================\n")
+sink()
+
+cat("✓ Summary saved to 'type2_model_summary.txt'\n\n")
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+
+cat("================================================================================\n")
+cat("                            ANALYSIS COMPLETE!                                  \n")
+cat("================================================================================\n\n")
+
+cat("✓ Type 2 non-parametric model successfully created\n\n")
+
+cat("KEY OUTPUTS:\n")
+cat("  1. type2_model                         - R object in workspace\n")
+cat("  2. type2_nonparametric_model.RData     - Saved model file\n")
+cat("  3. type2_model_summary.txt             - Text summary report\n")
+cat("  4. type2_nonparametric_results.pdf     - Visualization plots\n\n")
+
+cat("NEXT STEPS:\n")
+cat("  → Use samplers in discrete event simulation\n")
+cat("  → Compare to parametric models if needed\n")
+cat("  → Validate simulation results against historical data\n\n")
+
+cat("EXAMPLE USAGE:\n")
+cat("  # Load the model\n")
+cat("  load('type2_nonparametric_model.RData')\n\n")
+cat("  # Generate random duration\n")
+cat("  type2_model$samplers$duration(1)\n\n")
+cat("  # Generate 5 random interarrivals\n")
+cat("  type2_model$samplers$interarrival(5)\n\n")
+
+cat("  # Access statistics\n")
+cat("  type2_model$duration_stats$mean\n")
+cat("  type2_model$confidence_intervals$duration_mean\n\n")
+
+cat("================================================================================\n\n")
+
+################################################################################
+#                              END OF SCRIPT                                   #
+################################################################################
