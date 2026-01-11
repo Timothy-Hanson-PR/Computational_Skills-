@@ -1,0 +1,122 @@
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(stats)
+library(boot)
+
+data <- read_csv("ScanRecords (1).csv")
+numberdays <- length(unique(data$Date))
+numberPatients <- matrix(data = 0, nrow=numberdays, ncol = 2)
+colnames(numberPatients) <- c("Type1","Type2")
+
+counter <- 1
+for(i in 1:length(data$Date)){
+  if(i > 1 && data$Date[i] != data$Date[i-1]){
+    counter = counter +1
+  }
+  if(data$PatientType[i] == "Type 1"){
+    numberPatients[counter,1] <- numberPatients[counter,1] + 1
+  }
+  else{
+    numberPatients[counter,2] <- numberPatients[counter,2] + 1
+  }
+}
+
+
+plot(numberPatients[,1])
+plot(numberPatients[,2])
+plot(table(numberPatients[,1]))
+plot(table(numberPatients[,2]))
+
+lengthsType1 <- c()
+lengthsType2 <- c()
+for(i in 1:length(data$Date)){
+  if(data$PatientType[i] == "Type 1"){
+    lengthsType1 <- c(lengthsType1,data$Duration[i])
+  }
+  else{
+    lengthsType2 <- c(lengthsType2,data$Duration[i])
+  }
+}
+plot(sort(lengthsType1))
+plot(sort(lengthsType2))
+
+
+#Duration mode gamma(k*theta,k*theta^2)
+daily_counts_type2 <- numberPatients[, "Type2"]
+ktheta_hat <- mean(daily_counts_type2)
+ktheata2_hat <- var(daily_counts_type2)
+
+ktheta_hat
+ktheata2_hat
+
+# bootstrap for gamma moments: Type 2
+set.seed(42)
+B <- 5000
+
+n_dur <- length(lengthsType2)
+n_days <- length(daily_counts_type2)
+
+mean_dur_star <- numeric(B)
+var_dur_star <- numeric(B)
+
+for (b in 1:B) {
+  dur_star <- sample(lengthsType2, n_dur, replace = TRUE)
+  mean_dur_star[b] <- mean(dur_star)
+  var_dur_star[b] <- var(dur_star)
+
+}
+quantile(mean_dur_star, c(0.025, 0.975))
+quantile(var_dur_star, c(0.025, 0.975))
+
+# bootstrap gamma parameters: Type 2
+set.seed(42)
+B <- 5000
+shape_star <- numeric(B)
+rate_star  <- numeric(B)
+
+for (b in 1:B) {
+  dur_star <- sample(lengthsType2, n_dur, replace = TRUE)
+  fit <- fitdistr(dur_star, "gamma")
+  shape_star[b] <- fit$estimate["shape"]
+  rate_star[b]  <- fit$estimate["rate"]
+}
+
+quantile(shape_star, c(0.025, 0.975))
+quantile(rate_star,  c(0.025, 0.975))
+
+# Poisson for daily count: Type 2
+lambda_hat <- mean(daily_counts_type2)
+lambda_hat
+
+# non parametric bootstrap for Poisson lambda: Type 2
+set.seed(42)
+B <- 5000
+lambda_star <- numeric(B)
+for (b in 1:B) {
+  daily_counts_star <- sample(daily_counts_type2, n_days, replace = TRUE)
+  lambda_star[b] <- mean(daily_counts_star)
+}
+quantile(lambda_star, c(0.025, 0.975))
+
+dTimes2 <- diff(times2)
+hist(dTimes2)
+dTimes1 <- diff(times1)
+hist(dTimes1)
+mean(dTimes2)
+sd(dTimes2)
+var(dTimes2)
+var(dTimes2)/mean(dTimes2)
+mean(dTimes2)/(var(dTimes2)/mean(dTimes2))
+
+hist(dTimes2,breaks = 30,probability=TRUE)
+curve(dgamma(x,7.269084, scale = 0.1236738), add = TRUE)
+hist(lengthsType2, probability = TRUE)
+curve(dgamma(x,11.38573, scale = 0.05959536), add = TRUE)
+par(mfrow=c(1,1))
+mean(lengthsType2)
+var(lengthsType2)
+var(lengthsType2)/mean(lengthsType2)
+mean(lengthsType2)/(var(lengthsType2)/mean(lengthsType2))
+
+
