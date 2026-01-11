@@ -116,3 +116,12 @@ for (b in 1:B) {
 
 quantile(shape_star, c(0.025, 0.975))
 quantile(rate_star,  c(0.025, 0.975))
+
+#diagnostics 
+
+qqplot(
+  qgamma(ppoints(length(dTimes2)), shape_hat, rate_hat),
+  dTimes2
+)
+
+abline(0,1)
