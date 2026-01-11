@@ -42,63 +42,6 @@ plot(sort(lengthsType1))
 plot(sort(lengthsType2))
 
 
-#Duration mode gamma(k*theta,k*theta^2)
-daily_counts_type2 <- numberPatients[, "Type2"]
-ktheta_hat <- mean(daily_counts_type2)
-ktheata2_hat <- var(daily_counts_type2)
-
-ktheta_hat
-ktheata2_hat
-
-# bootstrap for gamma moments: Type 2
-set.seed(42)
-B <- 5000
-
-n_dur <- length(lengthsType2)
-n_days <- length(daily_counts_type2)
-
-mean_dur_star <- numeric(B)
-var_dur_star <- numeric(B)
-
-for (b in 1:B) {
-  dur_star <- sample(lengthsType2, n_dur, replace = TRUE)
-  mean_dur_star[b] <- mean(dur_star)
-  var_dur_star[b] <- var(dur_star)
-
-}
-quantile(mean_dur_star, c(0.025, 0.975))
-quantile(var_dur_star, c(0.025, 0.975))
-
-# bootstrap gamma parameters: Type 2
-set.seed(42)
-B <- 5000
-shape_star <- numeric(B)
-rate_star  <- numeric(B)
-
-for (b in 1:B) {
-  dur_star <- sample(lengthsType2, n_dur, replace = TRUE)
-  fit <- fitdistr(dur_star, "gamma")
-  shape_star[b] <- fit$estimate["shape"]
-  rate_star[b]  <- fit$estimate["rate"]
-}
-
-quantile(shape_star, c(0.025, 0.975))
-quantile(rate_star,  c(0.025, 0.975))
-
-# Poisson for daily count: Type 2
-lambda_hat <- mean(daily_counts_type2)
-lambda_hat
-
-# non parametric bootstrap for Poisson lambda: Type 2
-set.seed(42)
-B <- 5000
-lambda_star <- numeric(B)
-for (b in 1:B) {
-  daily_counts_star <- sample(daily_counts_type2, n_days, replace = TRUE)
-  lambda_star[b] <- mean(daily_counts_star)
-}
-quantile(lambda_star, c(0.025, 0.975))
-
 dTimes2 <- diff(times2)
 hist(dTimes2)
 dTimes1 <- diff(times1)
@@ -119,4 +62,57 @@ var(lengthsType2)
 var(lengthsType2)/mean(lengthsType2)
 mean(lengthsType2)/(var(lengthsType2)/mean(lengthsType2))
 
+# Poisson for daily count: Type 2 
+lambda_hat <- mean(daily_counts_type2) 
+lambda_hat 
+# non parametric bootstrap for Poisson lambda: Type 2 
+set.seed(42) 
+B <- 5000 
+lambda_star <- numeric(B) 
+for (b in 1:B) { 
+daily_counts_star <- sample(daily_counts_type2, n_days, replace = TRUE) 
+lambda_star[b] <- mean(daily_counts_star) } 
+quantile(lambda_star, c(0.025, 0.975))
 
+# Inter-arrival time analysis and Gamma bootstrap (Type 2)
+daily_counts_type2 <- numberPatients[, "Type2"]
+ktheta_hat <- mean(daily_counts_type2)
+ktheata2_hat <- var(daily_counts_type2)
+
+ktheta_hat
+ktheata2_hat
+
+# bootstrap for gamma moments: Type 2
+set.seed(42)
+B <- 5000
+
+n_arr <- length(dTimes2)
+n_days <- length(daily_counts_type2)
+
+mean_arr_star <- numeric(B)
+var_arr_star <- numeric(B)
+
+for (b in 1:B) {
+  arr_star <- sample(dTimes2, n_arr, replace = TRUE)
+  mean_arr_star[b] <- mean(arr_star)
+  var_arr_star[b] <- var(arr_star)
+
+}
+quantile(mean_arr_star, c(0.025, 0.975))
+quantile(var_arr_star, c(0.025, 0.975))
+
+# bootstrap gamma parameters: Type 2
+set.seed(42)
+B <- 5000
+shape_star <- numeric(B)
+rate_star  <- numeric(B)
+
+for (b in 1:B) {
+  arr_star <- sample(dTimes2, n_arr, replace = TRUE)
+  fit <- fitdistr(arr_star, "gamma")
+  shape_star[b] <- fit$estimate["shape"]
+  rate_star[b]  <- fit$estimate["rate"]
+}
+
+quantile(shape_star, c(0.025, 0.975))
+quantile(rate_star,  c(0.025, 0.975))
