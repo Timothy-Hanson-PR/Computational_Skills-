@@ -289,7 +289,7 @@ for(k in 1:n){
       fsum1[i+1,j+1] <- fsum1[i+1,j+1] + infeasible1/n
       fsum2[i+1,j+1] <- fsum2[i+1,j+1] + infeasible2/n
       dsum1[i+1,j+1] <- dsum1[i+1,j+1] + (delay11 + delay12)/(length(jobsType1lengths)+length(jobsType2lengths))/n
-      dsum2[i+1,j+1] <- dsum2[i+1,j+1] + (delay12 + delay22)/(length(jobsType1lengths)+length(jobsType2lengths))/n
+      dsum2[i+1,j+1] <- dsum2[i+1,j+1] + (delay21 + delay22)/(length(jobsType1lengths)+length(jobsType2lengths))/n
     }
   }
 }
@@ -347,3 +347,4 @@ print(fsum1[besti+1,bestj+1])
 print(fsum2[bestij2[1]+1,bestij2[2]+1])
 print(otsum1[besti+1,bestj+1]*60)
 print(otsum2[bestij2[1]+1,bestij2[2]+1]*60)
+
