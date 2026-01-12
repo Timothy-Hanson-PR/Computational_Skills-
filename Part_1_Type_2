@@ -1,7 +1,7 @@
 library(readr)
 library(dplyr)
 library(ggplot2)
-library(stats)
+library(MASS)
 library(boot)
 
 data <- read_csv("ScanRecords (1).csv")
@@ -22,12 +22,7 @@ for(i in 1:length(data$Date)){
   }
 }
 
-
-plot(numberPatients[,1])
-plot(numberPatients[,2])
-plot(table(numberPatients[,1]))
-plot(table(numberPatients[,2]))
-
+##### Analysis for Scan Duration: Type 2
 lengthsType1 <- c()
 lengthsType2 <- c()
 for(i in 1:length(data$Date)){
@@ -38,13 +33,92 @@ for(i in 1:length(data$Date)){
     lengthsType2 <- c(lengthsType2,data$Duration[i])
   }
 }
-plot(sort(lengthsType1))
-plot(sort(lengthsType2))
+
+# Sample Estimates for Scan Durations
+mean_dur2_hat <- mean(lengthsType2)
+sd_dur2_hat   <- sd(lengthsType2)
+var_dur2_hat <- var(lengthsType2)
+
+mean_dur2_hat
+sd_dur2_hat
+var_dur2_hat
+
+# Scan Duration follows Gamma
+shape_dur_hat <- (mean_dur2_hat^2) / var_dur2_hat
+rate_dur_hat  <- mean_dur2_hat / var_dur2_hat
+
+shape_dur_hat
+rate_dur_hat
+
+qqplot(
+  qgamma(ppoints(length(lengthsType2)), shape = shape_dur_hat, rate = rate_dur_hat),
+  lengthsType2,
+  main = "Gamma Q-Q plot"
+)
+abline(0, 1, col = "red")
 
 
-dTimes2 <- diff(times2)
+
+# Non-parametric bootstrap for Scan Durations: Type 2
+set.seed(42)
+B <- 5000
+n_dur2 <- length(lengthsType2)
+
+mean_dur2_star <- numeric(B)
+sd_dur2_star   <- numeric(B)
+
+shape_dur2_star <- numeric(B)
+rate_dur2_star  <- numeric(B)
+
+for (b in 1:B) {
+  dur_star <- sample(lengthsType2, size = n_dur2, replace = TRUE)
+  
+  m <- mean(dur_star)
+  s <- sd(dur_star)
+  v <- s^2
+  
+  mean_dur2_star[b] <- m
+  sd_dur2_star[b]   <- s
+  
+  # Gamma parameters via method of moments
+  shape_dur2_star[b] <- (m^2) / v
+  rate_dur2_star[b]  <- m / v
+}
+
+# Percentile bootstrap confidence intervals
+mean_dur2_ci  <- quantile(mean_dur2_star,  c(0.025, 0.975))
+sd_dur2_ci    <- quantile(sd_dur2_star,    c(0.025, 0.975))
+shape_dur2_ci <- quantile(shape_dur2_star, c(0.025, 0.975))
+rate_dur2_ci  <- quantile(rate_dur2_star,  c(0.025, 0.975))
+
+mean_dur2_ci
+sd_dur2_ci
+shape_dur2_ci
+rate_dur2_ci
+
+##### End of Analysis for Scan Duration: Type 2
+
+
+date <- -1
+counter <- -1
+times2 <- c(0)
+times1 <- c(0)
+for(i in 1:length(data$Date)){
+  if(data$Date[i] != date){
+    counter <- counter + 1
+    date <- data$Date[i]
+  }
+  if(data$PatientType[i] == "Type 2"){
+    times2 <- c(times2, (counter*9 + data$Time[i]-8))
+  }
+  else{
+    times1 <- c(times1, (counter*9+data$Time[i]-8))
+  }
+}
+
+dTimes2 <- diff(times2)[-1]
 hist(dTimes2)
-dTimes1 <- diff(times1)
+dTimes1 <- diff(times1)[-1]
 hist(dTimes1)
 mean(dTimes2)
 sd(dTimes2)
@@ -62,32 +136,50 @@ var(lengthsType2)
 var(lengthsType2)/mean(lengthsType2)
 mean(lengthsType2)/(var(lengthsType2)/mean(lengthsType2))
 
-# Poisson for daily count: Type 2 
-lambda_hat <- mean(daily_counts_type2) 
-lambda_hat 
-# non parametric bootstrap for Poisson lambda: Type 2 
+daily_counts_type2 <- numberPatients[, "Type2"]
+n_days <- length(daily_counts_type2)
+
+
+# Estimated mean daily Type 2 arrivals
+count_hat <- mean(daily_counts_type2)
+count_hat
+
+# Non-Parametric bootstrap for Estimated mean daily Type 2 arrivals 
 set.seed(42) 
 B <- 5000 
-lambda_star <- numeric(B) 
+count_star <- numeric(B) 
 for (b in 1:B) { 
-daily_counts_star <- sample(daily_counts_type2, n_days, replace = TRUE) 
-lambda_star[b] <- mean(daily_counts_star) } 
-quantile(lambda_star, c(0.025, 0.975))
+  daily_counts_star <- sample(daily_counts_type2, n_days, replace = TRUE) 
+  count_star[b] <- mean(daily_counts_star) } 
+quantile(count_star, c(0.025, 0.975))
 
-# Inter-arrival time analysis and Gamma bootstrap (Type 2)
-daily_counts_type2 <- numberPatients[, "Type2"]
-ktheta_hat <- mean(daily_counts_type2)
-ktheata2_hat <- var(daily_counts_type2)
 
-ktheta_hat
-ktheata2_hat
+##### Analysing Inter-arrival time: Type 2
 
-# bootstrap for gamma moments: Type 2
+# Inter-arrival time Sample Mean and Variance
+ktheta_hat <- mean(dTimes2)
+ktheata2_hat <- var(dTimes2)
+
+shape_hat <- (ktheta_hat^2) / ktheata2_hat
+rate_hat  <- ktheta_hat / ktheata2_hat
+
+shape_hat
+rate_hat
+
+# Inter-arrival time follows Gamma
+qqplot(
+  qgamma(ppoints(length(dTimes2)), shape = shape_hat, rate = rate_hat),
+  dTimes2,
+  main = "Gamma Q-Q plot"
+)
+abline(0, 1, col = "red")
+
+
+# bootstrap for Inter-arrival time Mean and Variance: Type 2
 set.seed(42)
 B <- 5000
 
 n_arr <- length(dTimes2)
-n_days <- length(daily_counts_type2)
 
 mean_arr_star <- numeric(B)
 var_arr_star <- numeric(B)
@@ -96,32 +188,36 @@ for (b in 1:B) {
   arr_star <- sample(dTimes2, n_arr, replace = TRUE)
   mean_arr_star[b] <- mean(arr_star)
   var_arr_star[b] <- var(arr_star)
-
+  
 }
 quantile(mean_arr_star, c(0.025, 0.975))
 quantile(var_arr_star, c(0.025, 0.975))
 
-# bootstrap gamma parameters: Type 2
+# bootstrap Gamma Parameters: Type 2
 set.seed(42)
 B <- 5000
+
+mean_arr_star <- numeric(B)
+var_arr_star  <- numeric(B)
+
 shape_star <- numeric(B)
 rate_star  <- numeric(B)
 
 for (b in 1:B) {
   arr_star <- sample(dTimes2, n_arr, replace = TRUE)
-  fit <- fitdistr(arr_star, "gamma")
-  shape_star[b] <- fit$estimate["shape"]
-  rate_star[b]  <- fit$estimate["rate"]
+  
+  m <- mean(arr_star)
+  v <- var(arr_star)
+  
+  mean_arr_star[b] <- m
+  var_arr_star[b]  <- v
+  
+  # Method-of-moments Gamma parameters
+  shape_star[b] <- (m^2) / v
+  rate_star[b]  <- m / v
 }
 
 quantile(shape_star, c(0.025, 0.975))
 quantile(rate_star,  c(0.025, 0.975))
 
-#diagnostics 
-
-qqplot(
-  qgamma(ppoints(length(dTimes2)), shape_hat, rate_hat),
-  dTimes2
-)
-
-abline(0,1)
+##### End of Analysis for Inter-arrival time: Type 2
